@@ -1,0 +1,281 @@
+---
+title: "Text Mining and Sentiment Analysis for The Hobbit"
+
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+# Data Preparation
+
+```{r, results="hide"}
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(NLP)
+library(tidyverse)
+library(stringr)
+library(tidytext)
+#library(textdata)
+library(textstem)
+library(plyr)
+library(lexicon)
+library(tidyr)
+```
+
+We navigate to the file that we want to analyze on our computer. In this case, we'll be performing analysis on the the text of J. R. R. Tolkien's the Hobbit, published in 1937 as a children's fantasy book.  
+```{r}
+filePath <- "https://raw.githubusercontent.com/iMoca/coursework/master/TheHobbit.txt"
+text <- readLines(filePath)
+#text <- readLines(file.choose())
+```
+
+We generate a corpus using the text mining or tm package in R. A corpus is a colelction of text documents. Since our file is in the .txt format and is read by R as a character-type file, it is appropriate to use the VectorSource function, which parses character vectors. 
+```{r}
+docs <- Corpus(VectorSource(text))
+```
+
+
+Next we perform some basic data cleaning. We first want to get rid of characters that could hinder our ability to lemmatize and recognize words. We  do this by creating the Space-ifier function, which turns these undesirable characters into spaces. 
+
+```{r}
+Spaceifier <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+docs <- tm_map(docs, Spaceifier, "/")
+docs <- tm_map(docs, Spaceifier, "@")
+docs <- tm_map(docs, Spaceifier, "\\|")
+docs <- tm_map(docs, Spaceifier, "”")
+docs <- tm_map(docs, Spaceifier, "“")
+docs <- tm_map(docs, Spaceifier, "’")
+docs <- tm_map(docs, Spaceifier, "—")
+```
+
+
+Next we use a couple of built-in functions in the text mining package. First, we turn all letters into lower case.
+Next, we remove numbers, stopwords, punctuation and extra white space from our corpus. 
+
+```{r}
+docs <- tm_map(docs, content_transformer(tolower))
+docs <- tm_map(docs, removeNumbers)
+docs <- tm_map(docs, removeWords, stopwords("english"))
+docs <- tm_map(docs, removePunctuation)
+docs <- tm_map(docs, stripWhitespace)
+```
+```{r}
+inspect(docs[1:20])
+```
+
+Next we perform lemmatization using the textstem R package. The lemmatizer uses a default lemma dictionary created from the original corpus and then splits the corpus into tokens to individually lemmatize them based on the dictionary. This will provide us with the root words of the corpus.
+```{r}
+docsCopy <- docs
+docsCopy <- tm_map(docsCopy, lemmatize_strings)
+```
+
+We now inspect our lemmatized document. We can immediately see some differences compared to our previous inspection above. For example, the 6th element of the corpus changed from "elves giant spiders conversations" to "elf giant spider conversation".
+
+```{r}
+inspect(docsCopy[1:20])
+```
+
+#Modeling and Evaluation
+
+Now we turn our cleaned corpus into a tidy Term Document Matrix. The weighting is simply based on term frequency. This will allow us to identify frequent terms and associations.  We also create a tidy dataframe, which includes the word, the number of times the word appears, the document it appears in and its count. 
+
+```{r}
+dtm <- TermDocumentMatrix(docsCopy)
+dtm_tidy <- tidy(dtm)
+head(dtm_tidy)
+```
+
+Next we'd like to see the most frequent terms used. Let's query our document term matrix for all terms that occur more than 50 times. 
+
+```{r}
+findFreqTerms(dtm, lowfreq = 50)
+```
+
+To illustrate our most frequent words:
+
+```{r}
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+head(d, 10)
+```
+
+```{r}
+barplot(d[1:10,]$freq, las = 2, names.arg = d[1:10,]$word,
+        col ="orange", main ="Most frequent words in the documents",
+        ylab = "Word frequencies")
+```
+
+
+Let's say we'd like to see which words tend to be associated with the top five most frequent words. We specify a generous correlation limit of 0.05. 
+```{r}
+findAssocs(dtm, c("say", "bilbo", "come", "good", "dwarf"), corlimit=0.05) 
+```
+
+Next we generate a word cloud for words that appear at least five times, for a maximum of 100 words, showing the most frequent words in the middle. 
+
+
+```{r}
+set.seed(1234)
+wordcloud(words = d$word, freq = d$freq, min.freq = 5,
+          max.words=100, random.order=FALSE, rot.per=0.5, 
+          colors=brewer.pal(8, "Paired"))
+```
+
+
+```{r}
+head(d, 10)
+```
+
+We use the NRC sentiment package in the tidy text to perform some sentiment analysis. The NRC lexicon was developed by Saif Mohammad and Peter Turney. The emotions available are anger, anticipation, disgust, fear, joy, sadness, surprise and trust.
+
+We first extract the joyous words from the lexicon. Then we can generate a word cloud including only frequent words that reflect joy.
+
+```{r}
+nrcjoy <- get_sentiments("nrc") %>%    
+  filter(sentiment == "joy")          
+```
+```{r}
+happywords <- d %>%
+  inner_join(nrcjoy, by = "word") 
+
+happy_cloud <- wordcloud(words = happywords$word, freq = happywords$freq, min.freq = 5, max.words=100, random.order=FALSE, color = brewer.pal(n = 8,"Set1"))
+```
+We repeat the process with sadness, disgust, and fear. 
+
+```{r}
+nrcsad <- get_sentiments("nrc") %>%    
+  filter(sentiment == "sadness") 
+
+sadwords <- d %>%
+  inner_join(nrcsad, by = "word") 
+
+sad_cloud <- wordcloud(words = sadwords$word, freq = sadwords$freq, min.freq=5, max.words=100, random.order=FALSE)
+```
+
+
+
+
+```{r}
+nrcfear <- get_sentiments("nrc") %>%   
+  filter(sentiment == "fear")
+
+fearwords <- d %>%
+  inner_join(nrcfear, by = "word") 
+
+fear_cloud <- wordcloud(words = fearwords$word, freq = fearwords$freq, min.freq = 5, max.words=100, random.order=FALSE, color = brewer.pal(n = 8,"Accent"))
+```
+
+
+
+```{r}
+nrcdisgust <- get_sentiments("nrc") %>%   
+  filter(sentiment == "disgust")
+
+disgust_words <- d %>%
+  inner_join(nrcdisgust, by = "word")
+
+disgust_cloud <- wordcloud(words = disgust_words$word, freq = disgust_words$freq, min.freq = 5, max.words=100, random.order=FALSE, color = brewer.pal(n = 8,"Spectral"))
+```
+
+```{r}
+dtm_tidy$linenumber <- 1:nrow(dtm_tidy)  
+id <- rownames(dtm_tidy)
+dtm_tidy <- cbind(id=id, dtm_tidy)
+dtm_tidy$word <- dtm_tidy$term
+```
+
+
+Consider a user that would perhaps like to know what they're about to read and how they're likely to feel about it before they read it. To illustrate this, we show the count of joyous words for each block of 500 lines. We can graph the intensity of joy based on the number of joyous words as the book goes on.
+
+```{r}
+HobbitJoy <- dtm_tidy %>% 
+  inner_join(get_sentiments("nrc")) %>%  
+  filter(sentiment == "joy") %>%
+  dplyr::group_by(index = linenumber %/% 500) %>%  
+  dplyr::summarise(sentiment = n()) %>%   
+  mutate(method = "NRC")          
+```
+
+```{r}
+HobbitJoy %>%                     # plot results
+  ggplot(aes(index, sentiment)) +
+  geom_col(show.legend = FALSE,
+           fill = "orange") + 
+  xlab("Book Progression") + 
+  ylab("Joy") + 
+  labs(title = "Joyous Sentiment in the Text") +
+  theme_minimal()
+```
+
+We can show a similar output for fear, anticipation, and anger:
+
+```{r}
+HobbitFear <- dtm_tidy %>% 
+  inner_join(get_sentiments("nrc"), by ='word') %>%  
+  filter(sentiment == "fear") %>%
+  dplyr::group_by(index = linenumber %/% 500) %>%  
+  dplyr::summarise(sentiment = n()) %>%   
+  mutate(method = "NRC")          
+
+HobbitFear %>%                     
+  ggplot(aes(index, sentiment)) +
+  geom_col(show.legend = FALSE,
+           fill = "purple") + 
+  xlab("Book Progression") + 
+  ylab("Fear") + 
+  labs(title = "Fearful Sentiment in the Text") +
+  theme_minimal()
+```
+
+```{r}
+HobbitAnticipation <- dtm_tidy %>% 
+  inner_join(get_sentiments("nrc")) %>%  
+  filter(sentiment == "anticipation") %>%
+  dplyr::group_by(index = linenumber %/% 500) %>%  
+  dplyr::summarise(sentiment = n()) %>%   
+  mutate(method = "NRC")          
+
+HobbitAnticipation %>%                     
+  ggplot(aes(index, sentiment)) +
+  geom_col(show.legend = FALSE,
+           fill = "pink") + 
+  xlab("Book Progression") + 
+  ylab("Anticipation") + 
+  labs(title = "Anticipation Sentiment in the Text") +
+  theme_minimal()
+```
+
+```{r}
+HobbitAnger <- dtm_tidy %>% 
+  inner_join(get_sentiments("nrc")) %>%  
+  filter(sentiment == "anger") %>%
+  dplyr::group_by(index = linenumber %/% 500) %>%  
+  dplyr::summarise(sentiment = n()) %>%   
+  mutate(method = "NRC")          
+
+HobbitAnger %>%                     
+  ggplot(aes(index, sentiment)) +
+  geom_col(show.legend = FALSE,
+           fill = "red") + 
+  xlab("Book Progression") + 
+  ylab("Anger") + 
+  labs(title = "Angry Sentiment in the Text") +
+  theme_minimal()
+```
+
+
+A shiny app is available here! 
+
+https://ioanamoca.shinyapps.io/Group1Lab2Appv2/
+
+Please make sure you load a text file or the Shiny App will not work! We recommend this one!
+
+https://raw.githubusercontent.com/iMoca/coursework/master/TheHobbitText.txt

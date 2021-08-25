@@ -1,0 +1,456 @@
+---
+title: "CSDA 1040 Group 1 Assignment 1"
+author: "Gabriel, Ioana, Linda, Marina, Sushma"
+date: "08/11/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, echo=FALSE}
+suppressMessages(library(dplyr))
+suppressMessages(library(data.table))
+suppressMessages(library(tidyr))
+suppressMessages(library(lsa))
+suppressMessages(library(recommenderlab))
+suppressMessages(library(ggplot2))
+suppressMessages(library(matrixStats))
+suppressMessages(library(ggthemes))
+suppressMessages(library(rstan))
+
+source('https://raw.githubusercontent.com/ChicagoBoothML/MachineLearning_Fall2015/master/Programming%20Scripts/Book%20Recommendation/R/ParseData.R')
+suppressMessages(data <- parse_book_crossing_data())
+Books <- data$books
+Users <- data$users
+Ratings <- data$ratings
+Ratings[ , `:=`(user_id = factor(user_id),
+                isbn = factor(isbn))]
+```
+
+#Business Understanding
+
+Determine Business Objectives: 
+
+Our report will benefit those sites that would like to drive up the number of books that are viewed and sold. By designing a Recommender System, book sites will offer their customers the ability to find similar books, authors and genres as our systems generates choices for them. They will no longer have to waste time performing multiple searches, therefore will be able to make decisions quickly and possibly purchasing multiple books at one time. Users want something that is simple and easy to use. They don’t want to perform multiple searches and having an app that does the work for them, will bring them back to the client’s site.
+
+This will improve the user experience and sustain long-term growth of revenues through customer retention and growth in market share. This recommender can also be used by Book Crossings, the social media and virtual library platform from which the data was pulled. This can help connect users to one another through shared love of similar books and help users choose which books to borrow. 
+
+Assess the situation: 
+
+Are these sites already mining data? What hardware and software is being used? What are the data sources and their types? Determine Data Mining Goals: Whom do we approach? Which segment of customers (size/level). We must specify our data mining problem type. E.g. classification, description, prediction and clustering. We have to discuss if our vision is feasible, find out what resources are needed and make sure our procedures are coherent.
+
+
+#Data Preparation and Exploration
+
+The dataset we have chosen is a four-week crawl of Book-Crossing data. Book-Crossing functions like a virtual library and social media site where users can lend their books to other users around the world, tracking their books throughout. The dataset consists of three basic tables:
+
+The books dataset includes three character variables for ISBN, title and author. The ratings dataset includes a numerical variable for book ratings ranging from 0 to 10, a factor variable for ISBN and a factor variable for user ID. The final dataset houses user data by user id (integer), location (character), and age (numerical). Summary data on the dataframes is shown below.
+
+```{r, echo=FALSE}
+str(Ratings)
+str(Books)
+str(Users)
+```
+
+We intend to use the data to generate a recommender on user-based collaborative filtering, as minimal information is available about book content. As a result, our target variables are ratings, ISBN, and user ID.
+
+Next, we explore the dataset and perform some pruning.
+
+```{r}
+summary(Ratings$book_rating)
+```
+The median rating is zero, and mean is 2.867. Based on the documentation, this suggests that the median rating is implicit, while explicit ratings are provided from 1-10. Let's consider only books rated 1 through 10. To subset the data and visualize the ratings.
+
+
+```{r}
+Ratings1 <- subset(Ratings, book_rating > 0, select = c("user_id","isbn","book_rating"))
+qplot(book_rating, data = Ratings1, geom = "histogram", binwidth = 1, xlab = "Ratings", ylab = "Count", main = "Historgram of Explicit Book Ratings")
+```
+Now we will further clean our Ratings dataset. We know that ISBNs are numerical figures. Any kind of data entry error, including text or other characters, should be eliminated. To do this, Let's force NAs to miscoded isbn numbers by converting it to a numeric variable, and then back to a factor. We similarly turn the user_id integer into a factor:
+
+```{r echo=FALSE}
+Ratings1$isbn <- as.numeric(as.character(Ratings1$isbn))
+Ratings1$isbn=as.factor(Ratings1$isbn)
+Ratings1$user_id=as.factor(Ratings1$user_id)
+```
+
+Next we look at the average explicit rating. 
+```{r}
+mean(Ratings1$book_rating)
+```
+On average, books that received an explicit rating were rated quite highly, at approximately 7.6 out of 10.
+
+Our next graph illustrates the number of explicit ratings per user. We can see that the majority of users provided one explicit rating.
+
+```{r, echo=FALSE}
+Ratings1 %>% 
+  group_by(user_id) %>% 
+  summarize(number_of_ratings_per_user = n()) %>% 
+  ggplot(aes(number_of_ratings_per_user)) + 
+  geom_bar(fill = "pink") + coord_cartesian(c(0, 10))+labs(title="Number of Ratings From Each User", 
+       x="Number of Rating from Each User",
+       y="Count")
+```
+
+Next we plot the average rating by user ID. 
+
+```{r, echo=FALSE}
+Ratings1 %>% 
+  group_by(user_id) %>% 
+  summarize(mean_user_rating = mean(book_rating)) %>% 
+  ggplot(aes(mean_user_rating)) +
+  geom_histogram(fill = "cadetblue3")+labs(title="Mean User Rating", 
+       x="Average Book Rating",
+       y="Count")
+```
+
+To identify the top ten most popular books, we summarize the number of ratings per book and list those that were rated most frequently. We can see that The Lovely Bones: A Novel was rated most frequently, followed by Wild Animus and The Da Vinci Code.
+
+```{r}
+Ratings1 %>% 
+  group_by(isbn) %>% 
+  summarize(number_of_ratings_per_book = n()) %>%
+  arrange( desc(number_of_ratings_per_book)) %>%
+  left_join(Books,by = "isbn")  %>%
+  head(10)
+```
+
+
+We can also visualize the number of and average ratings per book, shown below. 
+
+```{r}
+Ratings1 %>% 
+  group_by(isbn) %>% 
+  summarize(number_of_ratings_per_book = n()) %>% 
+  ggplot(aes(number_of_ratings_per_book)) + 
+  geom_bar(fill = "orange", width = 1) + coord_cartesian(c(0,40))+labs(title="Number of Ratings per Book", 
+       x="Number of Ratings per Book",
+       y="Count")
+```
+
+
+
+Who are the people doing all this reading and rating? Recall that we have a dataset on users that includes age and a location variable. Our location variable is not very standardized; it probably depends on how the user entered their information in the site and is subject to data entry errors. As well, people enter varying degrees of specificity regarding their location. To extract some high level summaries, we explore this dataset, starting with age. 
+
+```{r}
+summary(Users$age)
+```
+
+Our minimum age is 0 and our maximum age is 244. As we believe the users of the Book Crossing site are humans and not tortoises, let's generously assume the oldest user is 110 years of age and the youngest user is 1, with all other ages as missing values.
+
+```{r}
+Users$age[Users$age == 0] <- NA
+Users$age[Users$age > 110] <- NA
+summary(Users$age)
+```
+We've introduce an additional 512 missing values, but our ages now appear a bit more reasonable. 
+
+Next, let's simplify locations to countries. Our location entries are typically expressed as city, state, country. To extract the country we create a separate variable that takes the values of the characters after the second comma in the location variable. We then drop our location variable since it is not useful to our analysis. 
+```{r}
+Users$Country <- gsub(".*,","",Users$location)
+Users$Country <- sub('.', '', Users$Country)
+Users <- subset(Users, select = c("user_id", "Country", "age"))
+```
+Let's have a look at our top ten countries of origin for users. We can see below that the most frequently appearing country of origin is the USA, followed by Canada and the United Kingdom.
+
+```{r}
+Users %>% 
+  group_by(Country) %>% 
+  summarize(number_of_users_per_country = n()) %>%
+  arrange( desc(number_of_users_per_country)) %>%
+  head(10)
+```
+
+
+
+Next we visualize the age variable for users in selected countries. The Box Plot reaffirms the large number of users coming from the USA, compared to, for example, Russia. We can see that the median age of users from the USA, United Kingdom and Canada is just over 30, while Spanish and Russian users are a bit younger. Generally, over 75% of users are under 60,  but most countries also have some older outlying users.
+```{r}
+split_country <- droplevels(subset(Users,Users$Country %in% Users$Country[1:10]))
+theme_set(theme_classic())
+g <- ggplot(split_country, aes(Country, age))
+g + geom_boxplot(varwidth=T, fill="plum") + 
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="Age of Users grouped by Country", 
+       subtitle="Selected Countries Only",
+       x="Country",
+       y="Age")
+```
+
+
+
+
+
+Next we will check for duplicate entries. We want to ensure there are no duplications of ratings for the same book by the same user. First, let's create some separate datasets to test this and convert ISBN and user ID to integers to support our merging processes. 
+
+```{r echo=FALSE}
+df_books <- Books
+df_ratings <- Ratings
+df_users <- Users
+
+df_ratings$isbn=as.integer(df_ratings$isbn)
+df_ratings$user_id=as.integer(df_ratings$user_id)
+df_users$user_id=as.integer(df_users$user_id)
+```
+
+Let's check whether there are any Null cases in ISBN variable of the Ratings dataframe. 
+
+```{r}
+sum(complete.cases(df_ratings$isbn))
+sum(is.na(df_ratings$isbn))
+```
+We can see that there are no null cases since the total number of complete cases is equal to the total number of observations. We show this a second way by illustrating the total null values. 
+
+Now we check to see if there are duplicates by performing a full merge, an anti-join and a semi-join. Our full merge will merge datasets entirely, while the anti-join will provide a merge based on non-matches. We can check this using a semi-join: The difference in the number of observations created in the full merge and those in the anti-join should be equal to the number of observations in the semi-join. We see below that this is the case.
+
+
+```{r}
+df_fullmerge <- full_join(df_ratings,df_users, by = "user_id")
+df_mergecheck <- anti_join(df_ratings,df_users, by = "user_id")
+df_merge <- semi_join(df_ratings,df_users, by = "user_id")
+nrow(df_ratings)
+nrow(df_mergecheck)
+nrow(df_merge)
+```
+
+Next we check to see if combinations are unique in the merged table of Users and Ratings and in the Ratings dataset we originally had.
+
+```{r}
+df_unique <- unique(df_merge[,c("user_id","isbn")])
+df_unique_isbn <- unique(df_ratings[,c("user_id","isbn")])
+nrow(df_unique)
+nrow(df_unique_isbn)
+```
+We see that the number of rows in the unique dataset is the same, and therefore conclude there are no duplicate combinations of user IDs and ISBNs.
+
+A second way to do this is to drop duplicate ratings in the ratings dataset and then count the rows.
+
+```{r}
+df_unique_isbn <- df_ratings %>% distinct(user_id, isbn, .keep_all = TRUE)
+nrow(df_unique_isbn)
+```
+since df_unique_isbn has the same number of observations as df_ratings, then that means there are no duplicate combinations in the data, and each isbn is unique for each user_id.
+
+Let's remove items we will no longer use to save space:
+```{r}
+rm("Books", "df_books", "df_fullmerge","df_ratings","df_merge","df_mergecheck","df_unique","df_unique_isbn","df_users","g","Ratings1","split_country")
+```
+#Modeling
+We want to find the minimum and maximum ratings per book, and the minimum and maximum number of ratings per individual user. We generate two new dataframes by reshaping the Ratings dataframe. 
+
+```{r}
+ratings_per_user <- dcast(Ratings, user_id ~ ., value.var='book_rating')
+ratings_per_book <- dcast(Ratings, isbn ~ ., value.var='book_rating')
+min(ratings_per_user$.)
+max(ratings_per_user$.)
+min(ratings_per_book$.)
+max(ratings_per_book$.)
+```
+
+We can see that each user has rated between 1 and 13,602 books, and each individual book has between 1 and 2,502 ratings.
+
+
+Let's remove users that gave few ratings and books that had few ratings in order to improve the recommender.
+```{r}
+userswithsufficientratings <- ratings_per_user[. >= 2, user_id]
+bookswithsufficientratings <- ratings_per_book[. >=2, isbn]
+Ratings <- Ratings[user_id %in% userswithsufficientratings, ]
+Ratings <- Ratings[isbn %in% bookswithsufficientratings, ]
+```
+We now coerce the Ratings table to a reccommenderlab-format real-valued matrix:
+```{R}
+Ratings <- as(Ratings, 'realRatingMatrix')
+
+ncol(Ratings)
+nrow(Ratings)
+```
+
+
+Our rating matix includes 44,795 rows (users) and 142,994 columns (books). This is rather large. Let's use a random sample of this data to help develop the recommender. 
+
+```{r}
+set.seed(1234)
+Ratingssubset <- sample(Ratings, 700)
+ncol(Ratingssubset)
+nrow(Ratingssubset)
+```
+Our new matrix uses only 700 users, but keeps all books. We remove some of the items to save memory.
+
+```{r}
+rm("ratings_per_book","ratings_per_user","Users","Ratings","bookswithsufficientratings","userswithsufficientratings")
+```
+We can examine our rating matrix. We can see that user 31533 gave two books a rating of 10 and one of 7.
+```{r}
+head(as(Ratingssubset, "data.frame"))
+```
+
+Let's normalize our ratings matrix to remove bias of individuals. For example, some individuals may consistently give low ratings, while others may give high ratings. 
+
+```{r}
+Ratingssubset_n <-normalize(Ratingssubset)
+```
+
+Below, we can see the average rating given by user 31533 is a 4.5 and has rated 6 books.
+```{r}
+as(Ratingssubset[8,], "list")
+rowMeans(Ratingssubset[8,])
+```
+
+For the normalized rating matrix, the average rating for user 31533 is 0.
+
+```{r}
+as(Ratingssubset_n[8,], "list")
+rowMeans(Ratingssubset_n[8,])
+```
+
+Below we visualize the normalized ratings. As you can see, they span from negative 10 to positive 10 and are centered around 0.
+```{r}
+hist(getRatings(Ratingssubset_n), breaks=100)
+```
+Comparing to the non-normalized data, we can see the majority of the ratings are implicit ratings (i.e., ratings of 0).
+```{r}
+hist(getRatings(Ratingssubset), breaks=100)
+```
+
+
+Next we develop an evaluation scheme using a 90% test/train split. Five items will be given to the recommender, while the rest are kept to compute the error. This is based on the given 1 experimental protocol in which 1 rating is selected at random for a given user and the recommender computes the remaining ratings. A rating of 5 and above is conisdered a good rating. 
+
+```{r}
+evalscheme <- evaluationScheme(
+  Ratingssubset, 
+  method='split',
+  train=0.9,
+  given=1,
+  goodRating=5)
+evalscheme
+```
+
+
+
+We can see all the recommender types available to us based on our rating matrix type
+```{r, echo=FALSE}
+#recommenderRegistry$get_entries(dataType = "realRatingMatrix")
+```
+
+Next we generate several recommenders: the Popularity-Based recommender, User-based collaborative filter, and a random recommender. The popularity-based recommender is based on popular items determined based on the number of ratings. We train a User-based Collaborative Filtering Recommender by normalizing (i.e., subtracting the average rating per user) and using the cosine method. Here we assume similar users will have similar preferences/ratings. Based on the cosine measure of similarity, aggregations of similar users will be used to predict ratings.The default method uses 25 nearest neighbours.The random method will recommend books at random, and the re-recommender recommends highly-rated books.
+
+
+1) Popularity-Based Recommender
+
+Below we can see the predicted rating for one user for a number of items.
+
+```{r}
+popularity_based <- Recommender(getData(evalscheme, 'train'),method='POPULAR')
+popularity_based_pred <- predict(popularity_based,getData(evalscheme, 'known'),type='ratings')
+
+head(as(popularity_based_pred, "data.frame"))
+```
+
+We can also generate a top-five list for users based on the predicted ratings. An example is shown below.
+```{r}
+top5popular <- predict(popularity_based, getData(evalscheme, 'known'), n=5, type="topNList")
+```
+
+To see the list of top five recommendations of books by ISBN for the 6th user, we can run the following:
+```{r}
+as(top5popular, "list")[[6]]
+```
+
+Evaluating Popularity Based Filtering:
+```{r}
+popularity_based_pred_acc <- calcPredictionAccuracy(popularity_based_pred,getData(evalscheme, 'unknown'))
+popularity_based_pred_acc
+```
+
+We can also output the confusion matrix to evaluate the Top-N list:
+```{r}
+p1 <- predict(popularity_based, getData(evalscheme, "known"), type="topNList")
+results1<-calcPredictionAccuracy(p1, getData(evalscheme, "unknown"), given=1, goodRating=5) 
+results1
+```
+
+
+
+
+2) User-Based Collaborative-Filtering Recommender
+```{r}
+usercollabfilter <- Recommender(getData(evalscheme, 'train'),method='UBCF')
+usercollabfilter_pred <- predict(usercollabfilter,getData(evalscheme, 'known'),type='ratings')
+head(as(usercollabfilter_pred, "data.frame"))
+```
+
+Like before, we can generate a top-five list for selected users as an example.
+```{r}
+top5UBCF <- predict(usercollabfilter, getData(evalscheme, 'known'), n=5, type="topNList")
+```
+
+To see the list of top five recommendations for a user, we can run the following:
+```{r}
+as(top5UBCF, "list")[[17]]
+```
+
+Evaluating User-Based COllaborative Filtering:
+```{r}
+usercollabfilter_pred_acc <- calcPredictionAccuracy(usercollabfilter_pred,getData(evalscheme, 'unknown'))
+usercollabfilter_pred_acc
+```
+
+We can also output the confusion matrix to evaluate the Top-N list:
+```{r}
+p2 <- predict(usercollabfilter, getData(evalscheme, "known"), type="topNList")
+results2 <- calcPredictionAccuracy(p2, getData(evalscheme, "unknown"), given=1, goodRating=5) 
+results2
+```
+
+
+
+
+3) Random Recommender
+```{r}
+randomfilter <- Recommender(getData(evalscheme, 'train'),method='RANDOM')
+randomfilter_pred <- predict(randomfilter,getData(evalscheme, 'known'),type='ratings')
+#head(as(randomfilter_pred, "data.frame"))
+```
+
+We generate a top-five list for selected users using the random generator as an example.
+```{r}
+top5random <- predict(randomfilter, getData(evalscheme, 'known'), n=5, type="topNList")
+```
+
+To see the list of top five recommendations for a user, we can run the following:
+```{r}
+as(top5random, "list")[[4]]
+```
+
+Evaluating Random Filtering:
+```{r}
+randomfilter_pred_acc <- calcPredictionAccuracy(randomfilter_pred,getData(evalscheme, 'unknown'))
+randomfilter_pred_acc
+```
+
+We can also output the confusion matrix to evaluate the Top-N list:
+```{r}
+p3 <- predict(randomfilter, getData(evalscheme, "known"), type="topNList")
+results3 <- calcPredictionAccuracy(p3, getData(evalscheme, "unknown"), given=1, goodRating=5) 
+results3
+```
+
+
+#Evaluation
+
+We evaluate our models based on predictive accuracy relative to the test data where ratings are known. We consider the model with the smallest error to be the best. In this case, the user based collaborative filter produces the smallest error. We could similarly compute the F measure for all methods, which is the harmonic mean of the precision and recall. In this case, the popular model yields the highest F measure.
+
+```{r}
+(2/(1/results1[5]+1/results1[6]))
+
+```
+
+```{r}
+(2/(1/results2[5]+1/results2[6]))
+
+```
+
+```{r}
+(2/(1/results3[5]+1/results3[6]))
+
+```
